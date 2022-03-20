@@ -1,8 +1,9 @@
-import java.nio.file.{Path, Files}
 import zio._
 import zio.json._
 import zio.stream._
+
 import java.io.PrintWriter
+import java.nio.file.{Path, Files}
 
 trait Files {
     def read(path: Path): ZStream[Any, Throwable, Byte]
