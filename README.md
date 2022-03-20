@@ -20,7 +20,7 @@ script --t=script_log -q scriptfile
 
 Convert the *script_log* and *scriptfile* files into *script.json*:
 ```
-./mill convert.run tojson script_log scriptfile script.json
+./mill converter.run tojson script_log scriptfile script.json
 ```
 
 ## Edit the text session 
@@ -31,11 +31,18 @@ Edit directly the script.json file, the entries list is far easier to edit:
    [0.816811, "\r\n"],
 ```
 
+## Replay using script-replay-converter
+
+Replay the json script with **script-replay-converter**:
+```
+./mill converter.run replay jsonFile.json
+```
+
 ## Convert back json to script format
 
 Convert back the edited *script.json* into *script_log_edited* and *scriptfile_edited* files:
 ```
-./mill convert.run fromjson script_log_edited scriptfile_edited script.json
+./mill converter.run fromjson script_log_edited scriptfile_edited script.json
 ```
 
 ## Replay script:
