@@ -45,7 +45,7 @@ Convert back the edited *script.json* into *script_log_edited* and *scriptfile_e
 ./mill converter.run fromjson script_log_edited scriptfile_edited script.json
 ```
 
-## Replay script:
+## Replay script with scriptreplay:
 
 Replay the edited script:
 ```
