@@ -78,7 +78,7 @@ object ConverterCli extends ZIOAppDefault {
       args <- ZIOAppArgs.getArgs
       _    <- converterApp.run(args.toList)
         .provideCustom(
-          Files.live, 
+          File.live, 
           Repository.live,
           Service.live)
     } yield ())
