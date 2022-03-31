@@ -1,10 +1,7 @@
-import zio.ZIOAppArgs
+import zio._
 
 import zio.cli.{Args, CliApp, Command, Exists, HelpDoc, Options}
 import zio.cli.HelpDoc.Span.text
-
-import zio.ZIOAppDefault
-import zio.Console.printLine
 
 import java.nio.file.{Path}
 
@@ -60,18 +57,20 @@ object ConverterCli extends ZIOAppDefault {
 - to capture: "script --t=script_log -q scriptfile"
 - to replay: "scriptreplay --timing=script_log scriptfile""""
 
+  val execute = (m: Subcommand) => m match {
+    case Subcommand.FromJson(a, b, c) => Service.convertFromJson(a, b, c).tapErrorCause(ZIO.logErrorCause(_))
+    case Subcommand.ToJson(a, b, c) => Service.convertToJson(a, b, c).tapErrorCause(ZIO.logErrorCause(_))
+    case Subcommand.Replay(jsonfile) => Service.replay(jsonfile).tapErrorCause(ZIO.logErrorCause(_))
+    case Subcommand.Extract(jsonFile, commandsFile) => Service.extract(jsonFile, commandsFile).tapErrorCause(ZIO.logErrorCause(_))
+    case Subcommand.Play(commandFile, output) => Service.play(commandFile, output).tapErrorCause(ZIO.logErrorCause(_))
+  }
+
   val converterApp = CliApp.make(
     name = "Script format converter",
     version = "1.0.0",
     summary = text(summary),
     command = convert
-  ) {
-    case Subcommand.FromJson(a, b, c) => Service.convertFromJson(a, b, c).tapError(zio.Console.printLine(_))
-    case Subcommand.ToJson(a, b, c) => Service.convertToJson(a, b, c).tapError(zio.Console.printLine(_))
-    case Subcommand.Replay(jsonfile) => Service.replay(jsonfile).tapError(zio.Console.printLine(_))
-    case Subcommand.Extract(jsonFile, commandsFile) => Service.extract(jsonFile, commandsFile).tapError(zio.Console.printLine(_))
-    case Subcommand.Play(commandFile, output) => Service.play(commandFile, output).tapError(zio.Console.printLine(_))
-  }
+  ) (execute(_).tapErrorCause(ZIO.logErrorCause(_)))
 
   override def run =
     (for {
@@ -80,6 +79,7 @@ object ConverterCli extends ZIOAppDefault {
         .provideCustom(
           File.live, 
           Repository.live,
+          ShellProcess.live,
           Service.live)
     } yield ())
 }

@@ -13,21 +13,47 @@ import Model._
 
 import repositories._
 
-sealed trait ProcessLog 
-object ProcessLog {
-  final case class Command(command: String, nanoTime: Long) extends ProcessLog
-  final case class Output(byte: Byte, nanoTime: Long) extends ProcessLog
+
+trait ShellProcess {
+
+  def run(shell: ShellProcess.Shell, commands: Chunk[String]): UIO[ReplayFile]
+
 }
 
-case class ShellProcess(prompt: String, process: Process, queue: Queue[Chunk[Byte]], start: Long, processLogsRef: Ref[Vector[ProcessLog]]) {
-  
-  val promptAsByte = prompt.getBytes().toVector
+object ShellProcess {
 
-  def receiveOutput(b: Byte): ZIO[Clock & Console, Throwable, Unit] = for {
-    nanoTime <- Clock.nanoTime
+  sealed trait ProcessLog 
+  object ProcessLog {
+    final case class Command(command: String, nanoTime: Long) extends ProcessLog
+    final case class Output(byte: Byte, nanoTime: Long) extends ProcessLog
+  }
+
+  final case class Shell(prompt: String, shell: Array[String])
+  
+  object Shell {
+
+    val scala = Shell("scala", Array("scala", "-Dscala.color"))
+
+  }
+
+  def run(shell: Shell, commands: Chunk[String]) = ZIO.serviceWithZIO[ShellProcess](_.run(shell, commands))
+
+  val live = (ShellProcessLive.apply _).toLayer
+  
+}
+
+import ShellProcess._
+
+case class ShellProcessLive(console: Console, clock: Clock) extends ShellProcess {
+  
+  private case class ShellProcessImpl(prompt: String, process: Process, queue: Queue[Chunk[Byte]], start: Long, processLogsRef: Ref[Vector[ProcessLog]]) {
+    val promptAsByte = prompt.getBytes().toVector
+
+  def receiveOutput(b: Byte): ZIO[Any, Throwable, Unit] = for {
+    nanoTime <- clock.nanoTime
     output = ProcessLog.Output(b, nanoTime)
     _ <- processLogsRef.getAndUpdate(v => v.appended(output))
-    _ <- Console.print(new String(Array(b)))
+    _ <- console.print(new String(Array(b)))
   } yield () 
 
   def isPrompt = for {
@@ -38,11 +64,11 @@ case class ShellProcess(prompt: String, process: Process, queue: Queue[Chunk[Byt
     }
   } yield lasts == promptAsByte
 
-  def waitForPrompt: ZIO[Clock& Console, Throwable, Unit] = isPrompt flatMap { isPrompt =>
+  def waitForPrompt: ZIO[Any, Throwable, Unit] = isPrompt flatMap { isPrompt =>
     if (isPrompt) {
       ZIO.unit
     } else {
-      Clock.sleep(100.millis).flatMap(_ => waitForPrompt)
+      clock.sleep(100.millis).flatMap(_ => waitForPrompt)
     }
   }
 
@@ -55,17 +81,17 @@ case class ShellProcess(prompt: String, process: Process, queue: Queue[Chunk[Byt
     case (false, _) => Some(command)
   }
 
-  def typeCommand(command: String): ZIO[Console & Clock, Throwable, Unit] = for {
+  def typeCommand(command: String): ZIO[Any, Throwable, Unit] = for {
     _ <- waitForPrompt
-    nanoTime <- Clock.nanoTime
+    nanoTime <- clock.nanoTime
     input = ProcessLog.Command(command, nanoTime)
     _ <- processLogsRef.getAndUpdate(v => v.appended(input))
     _ <- queue.offer(toChunk(command + "\n"))
-    _ <- fixDisplayCommand(command).map(Console.printLine(_)).getOrElse(ZIO.unit)
-    _ <- Clock.sleep(50.millis)
+    _ <- fixDisplayCommand(command).map(console.printLine(_)).getOrElse(ZIO.unit)
+    _ <- clock.sleep(50.millis)
   } yield ()
 
-  def typeCommands(commands: Array[String]): ZIO[Console& Clock, Throwable, Unit] = ZIO.foreach(commands)(typeCommand).as(())
+  def typeCommands(commands: Array[String]): UIO[Unit] = ZIO.foreach(commands)(typeCommand).as(()).orDie
 
   private def toChunk(s: String) = Chunk.fromArray(s.getBytes(StandardCharsets.ISO_8859_1))
 
@@ -90,12 +116,12 @@ case class ShellProcess(prompt: String, process: Process, queue: Queue[Chunk[Byt
       }
     }
 
-    val v = logs.collect(_ match {
+    logs
+    .collect(_ match {
       case ProcessLog.Command(command, nanoTime) if !command.contains("(") => ((nanoTime - start).toDouble / 1000000000.0, command + "\n")
-      //case ProcessLog.Command(command, nanoTime) if command.contains("(") => ((nanoTime - start).toDouble / 1000000000.0, "\n")
       case ProcessLog.Output(byte, nanoTime) => ((nanoTime - start).toDouble / 1000000000.0, new String(Array(byte)))
     })
-    v.foldLeft(init)(reduce _)._2
+    .foldLeft(init)(reduce _)._2
   }
 
   def replayFile = for {
@@ -104,27 +130,41 @@ case class ShellProcess(prompt: String, process: Process, queue: Queue[Chunk[Byt
     footer = """Script done on 2022-03-20 07:44:11+01:00 [COMMAND_EXIT_CODE="0"]"""
     result = ReplayFile(header, footer, Chunk.fromArray(cleanLogs(start, logs).toArray))
   } yield result
-}
+  }
 
-object ShellProcess {
+  def run(shell: ShellProcess.Shell, commands: Chunk[String]) = for {
+    queue <- Queue.unbounded[Chunk[Byte]]
+    process <- Command(shell.shell.head, shell.shell.tail:_*).stdin(ProcessInput.fromQueue(queue)).run.orDie
+    start <- clock.nanoTime
+    processLogsRef <- Ref.make[Vector[ProcessLog]](Vector())
+    shellProcess = ShellProcessImpl(shell.prompt, process, queue, start, processLogsRef)
+    _ <- process.stdout.stream.foreach(s => shellProcess.receiveOutput(s)).fork
+    _ <- shellProcess.typeCommands(commands.toArray)
+      replayFile <- shellProcess.replayFile
+  } yield replayFile
   
+  /*
+  private case class Shell(cmd: Array[String], commands: Chunk[String]) {
+    def run(): ZIO[Console & Clock, Throwable, ReplayFile] = for {
+      shellProcess <- ShellProcess.make("scala> ", cmd)
+      _ <- shellProcess.typeCommands(commands.toArray)
+      replayFile <- shellProcess.replayFile
+    } yield replayFile
+  }
+*/
+
+  
+    /*
   def make(prompt: String, command: Array[String]) = for {
     queue <- Queue.unbounded[Chunk[Byte]]
     process <- Command(command.head, command.tail:_*).stdin(ProcessInput.fromQueue(queue)).run
     start <- Clock.nanoTime
     processLogsRef <- Ref.make[Vector[ProcessLog]](Vector())
-    shellProcess = ShellProcess(prompt, process, queue, start, processLogsRef)
+    shellProcess = ShellProcessImpl(prompt, process, queue, start, processLogsRef, console, clock)
     _ <- process.stdout.stream.foreach(s => shellProcess.receiveOutput(s)).fork
   } yield shellProcess
+*/
+
 
 }
 
-case class Shell(cmd: Array[String], commands: Chunk[String]) {
-
-  def run(): ZIO[Console & Clock, Throwable, ReplayFile] = for {
-    shellProcess <- ShellProcess.make("scala> ", cmd)
-    _ <- shellProcess.typeCommands(commands.toArray)
-     replayFile <- shellProcess.replayFile
-  } yield replayFile
-
-}

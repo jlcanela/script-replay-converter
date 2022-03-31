@@ -15,11 +15,11 @@ import repositories._
 
 trait Service {
 
-  def convertFromJson(a: Path, b: Path, c: Path): ZIO[Any, Throwable, Unit]
-  def convertToJson(a: Path, b: Path, c: Path): ZIO[Any, Throwable, Unit]
-  def replay(replayFile: Path): ZIO[Any, Throwable, Unit]
-  def extract(jsonFile: Path, commandsFile: Path): ZIO[Any, Throwable, Unit]
-  def play(commandFile: Path, replayFile: Path): ZIO[Console& Clock, Throwable, Unit]
+  def convertFromJson(a: Path, b: Path, c: Path): UIO[Unit]
+  def convertToJson(a: Path, b: Path, c: Path): UIO[Unit]
+  def replay(replayFile: Path): UIO[Unit]
+  def extract(jsonFile: Path, commandsFile: Path): UIO[Unit]
+  def play(commandFile: Path, replayFile: Path): ZIO[Any, Throwable, Unit]
 
 }
 
@@ -29,7 +29,7 @@ object Service {
   def convertToJson(a: Path, b: Path, c: Path) = ZIO.serviceWithZIO[Service](_.convertToJson(a, b, c))
   def replay(replayFile: Path) = ZIO.serviceWithZIO[Service](_.replay(replayFile))
   def extract(jsonFile: Path, commandsFile: Path) = ZIO.serviceWithZIO[Service](_.extract(jsonFile, commandsFile))
-  def play(commandFile: Path, replayFile: Path) = ZIO.serviceWithZIO[Service](_.play(commandFile, replayFile))
+  def   play(commandFile: Path, replayFile: Path) = ZIO.serviceWithZIO[Service](_.play(commandFile, replayFile))
 
   def live = (ServiceLive.apply _).toLayer
 
@@ -38,6 +38,7 @@ object Service {
 final case class ServiceLive(
     file: File,
     repository: Repository,
+    shellProcess: ShellProcess,
     console: Console,
     clock: Clock
 ) extends Service {
@@ -46,33 +47,33 @@ final case class ServiceLive(
       scriptLogPath: Path,
       scriptFilePath: Path,
       jsonFilePath: Path
-  ) = for {
+  ) = (for {
     scriptLog <- repository.scriptLog(scriptLogPath)
     scriptFile <- repository.scriptFile(scriptFilePath)
     jsonFile <- ReplayFile.fromFiles(scriptLog, scriptFile)
     _ <- file.writeFile(jsonFilePath, jsonFile.toJsonPretty)
-  } yield ()
+  } yield ()).orDie
 
   def convertFromJson(
       scriptLogPath: Path,
       scriptFilePath: Path,
       jsonFilePath: Path
-  ) = for {
+  ) = (for {
     jsonFile <- file.replayFile(jsonFilePath)
     _ <- file.writeFile(scriptLogPath, jsonFile.scriptLog.toString)
     _ <- file.writeFile(scriptFilePath, jsonFile.scriptFile.toString)
-  } yield ()
+  } yield ()).orDie
 
-  def replay(replayFile: Path) = for {
+  def replay(replayFile: Path) = (for {
     scriptFile <- file.replayFile(replayFile)
     _ <- ZStream.fromChunk(scriptFile.entries).foreach { case (delay, msg) =>
       clock
         .sleep(Duration.fromMillis((delay * 1000).toLong))
         .flatMap(_ => console.print(msg))
     }
-  } yield ()
+  } yield ()).orDie
 
-  def extract(jsonFile: Path, commandsFile: Path) = for {
+  def extract(jsonFile: Path, commandsFile: Path) = (for {
     scriptFile <- file.replayFile(jsonFile)
     commands = scriptFile.entries
       .map(_._2)
@@ -82,13 +83,14 @@ final case class ServiceLive(
     _ <- ZIO.foreach(Chunk.fromArray(commands)) { command =>
       console.printLine(command)
     }
-  } yield ()
+  } yield ()).orDie
 
-  def play(commandFile: Path, replayFilePath: Path) = for {
+  def play(commandFile: Path, replayFilePath: Path) = (for {
     commands <- file.fromJsonFile[Commands](commandFile)
-    replayFile <- service.Shell(Array("scala", "-Dscala.color"), commands.commands).run()
+    replayFile <- shellProcess.run(ShellProcess.Shell.scala, commands.commands)
+   // replayFile <- service.Shell(Array("scala", "-Dscala.color"), commands.commands).run()
     content = replayFile.toJsonPretty
      _ <- file.writeFile(replayFilePath, content)
-  } yield ()
+  } yield ()).orDie
 
 }
